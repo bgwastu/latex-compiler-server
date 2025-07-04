@@ -1,0 +1,10 @@
+node_modules/
+.pnpm-debug.log*
+.pnpm-store/
+dist/
+temp/
+temp-test/
+coverage/
+*.log
+.env
+.DS_Store
