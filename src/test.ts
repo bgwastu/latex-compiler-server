@@ -60,7 +60,7 @@ Hello World! This is a test LaTeX document.
 
       const response = await request(app)
         .post('/convert')
-        .attach('input', Buffer.from(simpleLatex), 'test.tex');
+        .attach('latex', Buffer.from(simpleLatex), 'test.tex');
 
       expect(response.status).toBe(200);
       expect(response.body).toHaveProperty('urlPdf');
@@ -102,7 +102,7 @@ This is a test document with citations \\citep{test2024}.
 
       const response = await request(app)
         .post('/convert')
-        .attach('input', Buffer.from(complexLatex), 'complex.tex');
+        .attach('latex', Buffer.from(complexLatex), 'complex.tex');
 
       expect(response.status).toBe(200);
       expect(response.body).toHaveProperty('urlPdf');
@@ -117,12 +117,97 @@ This is a test document with citations \\citep{test2024}.
 
       const response = await request(app)
         .post('/convert')
-        .attach('input', Buffer.from(invalidLatex), 'invalid.tex');
+        .attach('latex', Buffer.from(invalidLatex), 'invalid.tex');
 
       expect(response.status).toBe(400);
       expect(response.body).toHaveProperty('message');
       expect(typeof response.body.message).toBe('string');
       expect(response.body.message.length).toBeGreaterThan(0);
+    });
+
+    it('should return 400 for empty LaTeX content', async () => {
+      const response = await request(app)
+        .post('/convert')
+        .attach('latex', Buffer.from(''), 'empty.tex');
+
+      expect(response.status).toBe(400);
+      expect(response.body).toHaveProperty('error');
+      expect(response.body.error).toBe('LaTeX content is empty or too short');
+    });
+
+    it('should return 400 for LaTeX without documentclass', async () => {
+      const invalidLatex = `\\begin{document}
+Hello World!
+\\end{document}`;
+
+      const response = await request(app)
+        .post('/convert')
+        .attach('latex', Buffer.from(invalidLatex), 'no-documentclass.tex');
+
+      expect(response.status).toBe(400);
+      expect(response.body).toHaveProperty('error');
+      expect(response.body.error).toBe('Invalid LaTeX: Missing \\documentclass');
+    });
+
+    it('should return 400 for dangerous LaTeX commands', async () => {
+      const dangerousLatex = `\\documentclass{article}
+\\begin{document}
+\\write18{rm -rf /}
+\\end{document}`;
+
+      const response = await request(app)
+        .post('/convert')
+        .attach('latex', Buffer.from(dangerousLatex), 'dangerous.tex');
+
+      expect(response.status).toBe(400);
+      expect(response.body).toHaveProperty('error');
+      expect(response.body.error).toContain('Potentially dangerous LaTeX command detected');
+    });
+
+    it('should return 400 for severely unbalanced braces', async () => {
+      const unbalancedLatex = `\\documentclass{article}
+\\begin{document}
+{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{
+\\end{document}`;
+
+      const response = await request(app)
+        .post('/convert')
+        .attach('latex', Buffer.from(unbalancedLatex), 'unbalanced.tex');
+
+      expect(response.status).toBe(400);
+      expect(response.body).toHaveProperty('error');
+      expect(response.body.error).toBe('LaTeX content has significantly unbalanced braces');
+    });
+
+    it('should return 400 for extremely long lines', async () => {
+      const longLine = 'a'.repeat(15000);
+      const longLineLatex = `\\documentclass{article}
+\\begin{document}
+${longLine}
+\\end{document}`;
+
+      const response = await request(app)
+        .post('/convert')
+        .attach('latex', Buffer.from(longLineLatex), 'longline.tex');
+
+      expect(response.status).toBe(400);
+      expect(response.body).toHaveProperty('error');
+      expect(response.body.error).toBe('LaTeX content contains extremely long lines');
+    });
+
+    it('should return 400 for invalid filename with path separators', async () => {
+      const simpleLatex = `\\documentclass{article}
+\\begin{document}
+Hello World!
+\\end{document}`;
+
+      const response = await request(app)
+        .post('/convert')
+        .attach('latex', Buffer.from(simpleLatex), '../malicious.tex');
+
+      expect(response.status).toBe(400);
+      expect(response.body).toHaveProperty('error');
+      expect(response.body.error).toBe('Invalid filename. Filename cannot contain path separators.');
     });
 
     it('should handle file upload with different content types', async () => {
@@ -133,8 +218,7 @@ Different content type test.
 
       const response = await request(app)
         .post('/convert')
-        .field('someField', 'someValue')
-        .attach('input', Buffer.from(simpleLatex), {
+        .attach('latex', Buffer.from(simpleLatex), {
           filename: 'test-content.tex',
           contentType: 'text/plain'
         });
@@ -154,7 +238,7 @@ Mathematical symbols: $\\alpha$, $\\beta$, $\\gamma$
 
       const response = await request(app)
         .post('/convert')
-        .attach('input', Buffer.from(mathLatex), 'math.tex');
+        .attach('latex', Buffer.from(mathLatex), 'math.tex');
 
       expect(response.status).toBe(200);
       expect(response.body).toHaveProperty('urlPdf');
@@ -169,7 +253,7 @@ This should work with text/plain mimetype.
 
       const response = await request(app)
         .post('/convert')
-        .attach('input', Buffer.from(latexContent), {
+        .attach('latex', Buffer.from(latexContent), {
           filename: 'test.txt',
           contentType: 'text/plain'
         });
@@ -195,7 +279,7 @@ This should work with text/plain mimetype.
           
           const response = await request(app)
             .post('/convert')
-            .attach('input', Buffer.from(exampleContent), file);
+            .attach('latex', Buffer.from(exampleContent), file);
 
           expect(response.status).toBe(200);
           expect(response.body).toHaveProperty('urlPdf');

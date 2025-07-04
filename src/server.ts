@@ -36,6 +36,61 @@ async function uploadToR2(filePath: string, key: string, contentType: string): P
   return `${process.env.R2_PUBLIC_URL}/${key}`;
 }
 
+// Validation function for LaTeX content
+function validateLatexContent(content: string): { valid: boolean; error?: string } {
+  // Check if content is empty or too short
+  if (!content || content.trim().length < 10) {
+    return { valid: false, error: 'LaTeX content is empty or too short' };
+  }
+
+  // Check for basic LaTeX structure
+  if (!content.includes('\\documentclass')) {
+    return { valid: false, error: 'Invalid LaTeX: Missing \\documentclass' };
+  }
+  
+  if (!content.includes('\\begin{document}')) {
+    return { valid: false, error: 'Invalid LaTeX: Missing \\begin{document}' };
+  }
+
+  // Security check: prevent dangerous commands
+  const dangerousCommands = [
+    '\\write18',
+    '\\immediate\\write18',
+    '\\input{/etc/',
+    '\\include{/etc/',
+    '\\InputIfFileExists{/etc/',
+    '\\openin',
+    '\\openout',
+    '\\special{',
+    '\\catcode',
+    '\\def\\@@input',
+    '\\@@input'
+  ];
+
+  for (const cmd of dangerousCommands) {
+    if (content.includes(cmd)) {
+      return { valid: false, error: `Potentially dangerous LaTeX command detected: ${cmd}` };
+    }
+  }
+
+  // Check for balanced braces (basic check)
+  const openBraces = (content.match(/\{/g) || []).length;
+  const closeBraces = (content.match(/\}/g) || []).length;
+  if (Math.abs(openBraces - closeBraces) > 10) { // Allow some imbalance for complex documents
+    return { valid: false, error: 'LaTeX content has significantly unbalanced braces' };
+  }
+
+  // Check for extremely long lines (potential attack)
+  const lines = content.split('\n');
+  for (const line of lines) {
+    if (line.length > 10000) {
+      return { valid: false, error: 'LaTeX content contains extremely long lines' };
+    }
+  }
+
+  return { valid: true };
+}
+
 async function compileLatexWithBibliography(workingDir: string, texFileName: string): Promise<{ success: boolean; error?: string }> {
   const commands = [
     // First pass: generate .aux file
@@ -82,18 +137,55 @@ const storage = multer.diskStorage({
 
 const upload = multer({ 
   storage: storage,
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB max file size
+    files: 1 // Only allow single file upload
+  },
   fileFilter: (_req, file, cb) => {
-    if (file.mimetype === 'text/plain' || file.originalname.endsWith('.tex')) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only .tex files are allowed!'));
+    // Check file extension
+    if (!file.originalname.endsWith('.tex') && file.mimetype !== 'text/plain') {
+      return cb(new Error('Only .tex files or text/plain files are allowed!'));
     }
+    
+    // Check filename for security
+    if (file.originalname.includes('..') || file.originalname.includes('/') || file.originalname.includes('\\')) {
+      return cb(new Error('Invalid filename. Filename cannot contain path separators.'));
+    }
+    
+    cb(null, true);
   }
 });
 
 app.use(express.json());
 
-app.post('/convert', upload.single('input'), async (req: Request, res: Response) => {
+app.post('/convert', async (req: Request, res: Response) => {
+  try {
+    // Handle file upload with promise wrapper
+    await new Promise<void>((resolve, reject) => {
+      upload.single('latex')(req, res, (err) => {
+        if (err) {
+          if (err instanceof multer.MulterError) {
+            if (err.code === 'LIMIT_FILE_SIZE') {
+              return reject(new Error('File size too large. Maximum size is 5MB.'));
+            }
+            if (err.code === 'LIMIT_FILE_COUNT') {
+              return reject(new Error('Too many files. Only one file is allowed.'));
+            }
+            if (err.code === 'LIMIT_UNEXPECTED_FILE') {
+              return reject(new Error('Unexpected file field. Use "latex" field name.'));
+            }
+            return reject(new Error(err.message));
+          }
+          
+          return reject(new Error(err.message || 'Unknown file upload error'));
+        }
+        
+        resolve();
+      });
+    });
+  } catch (uploadError) {
+    return res.status(400).json({ error: uploadError instanceof Error ? uploadError.message : 'Upload failed' });
+  }
   if (!req.file) {
     return res.status(400).json({ error: 'No file uploaded' });
   }
@@ -103,8 +195,16 @@ app.post('/convert', upload.single('input'), async (req: Request, res: Response)
   const texFileName = path.basename(texFilePath, '.tex');
   const pdfFilePath = path.join(workingDir, `${texFileName}.pdf`);
   const fileUuid = texFileName; // The filename already contains UUID
-
   try {
+    // Read and validate LaTeX content
+    const latexContent = await fs.readFile(texFilePath, 'utf8');
+    const validation = validateLatexContent(latexContent);
+    
+    if (!validation.valid) {
+      await fs.remove(texFilePath); // Clean up uploaded file
+      return res.status(400).json({ error: validation.error });
+    }
+
     const compilationResult = await compileLatexWithBibliography(workingDir, texFileName);
     
     if (!compilationResult.success) {
