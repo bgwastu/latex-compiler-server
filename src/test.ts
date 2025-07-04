@@ -180,21 +180,33 @@ This should work with text/plain mimetype.
     });
 
     it('should handle example LaTeX files', async () => {
-      const examplePath = path.join(process.cwd(), 'example/1.tex');
-      const exampleExists = await fs.pathExists(examplePath);
+      const exampleDir = path.join(process.cwd(), 'example');
+      const exampleExists = await fs.pathExists(exampleDir);
       
       if (exampleExists) {
-        const exampleContent = await fs.readFile(examplePath, 'utf8');
+        const files = await fs.readdir(exampleDir);
+        const texFiles = files.filter(file => file.endsWith('.tex'));
         
-        const response = await request(app)
-          .post('/convert')
-          .attach('input', Buffer.from(exampleContent), 'example1.tex');
+        expect(texFiles.length).toBeGreaterThan(0);
+        
+        for (const file of texFiles) {
+          const examplePath = path.join(exampleDir, file);
+          const exampleContent = await fs.readFile(examplePath, 'utf8');
+          
+          const response = await request(app)
+            .post('/convert')
+            .attach('input', Buffer.from(exampleContent), file);
 
-        expect(response.status).toBe(200);
-        expect(response.body).toHaveProperty('urlPdf');
-        expect(response.body).toHaveProperty('urlLatex');
+          expect(response.status).toBe(200);
+          expect(response.body).toHaveProperty('urlPdf');
+          expect(response.body).toHaveProperty('urlLatex');
+          
+          // Verify URL format
+          expect(response.body.urlPdf).toMatch(/^https:\/\/.+\/.+\.pdf$/);
+          expect(response.body.urlLatex).toMatch(/^https:\/\/.+\/.+\.tex$/);
+        }
       } else {
-        console.warn('Example file not found, skipping test');
+        console.warn('Example directory not found, skipping test');
       }
     });
   });
